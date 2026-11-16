@@ -7,6 +7,7 @@ import {
   formatMoney,
   monthlyEquivalent,
   nextCharge,
+  sortSubscriptions,
   totals,
   upcomingRenewals,
   type Subscription,
@@ -108,4 +109,60 @@ test("formatMoney uses the currency symbol and two decimals", () => {
   assert.equal(formatMoney(596.2, "BRL"), "R$ 596.20");
   assert.equal(formatMoney(1376, "BRL"), "R$ 1,376.00");
   assert.equal(formatMoney(10, "USD"), "$ 10.00");
+});
+
+// ---- Sorting the list by a column ---------------------------------------------------------------------
+
+const LABELS = {
+  cycleLabel: { monthly: "Monthly", annual: "Annual", one_off: "One-off" },
+  statusLabel: { active: "Active", inactive: "Inactive", to_register: "To register" },
+};
+const names = (subs: Subscription[]) => subs.map((s) => s.name);
+
+test("sortSubscriptions by name is alphabetical, ignoring case and accents, and descending reverses it", () => {
+  const subs = [sub({ name: "zoom" }), sub({ name: "Ápice" }), sub({ name: "Github" })];
+  const today = new Date(Date.UTC(2026, 10, 16));
+  assert.deepEqual(names(sortSubscriptions(subs, "name", "asc", { today, ...LABELS })), ["Ápice", "Github", "zoom"]);
+  assert.deepEqual(names(sortSubscriptions(subs, "name", "desc", { today, ...LABELS })), ["zoom", "Github", "Ápice"]);
+});
+
+test("sortSubscriptions by amount is numeric, and a missing amount stays last in both directions", () => {
+  const subs = [sub({ name: "Ten", amount: 10 }), sub({ name: "None", amount: null }), sub({ name: "Hundred", amount: 100 }), sub({ name: "Nine", amount: 9 })];
+  const today = new Date(Date.UTC(2026, 10, 16));
+  assert.deepEqual(names(sortSubscriptions(subs, "amount", "asc", { today, ...LABELS })), ["Nine", "Ten", "Hundred", "None"]);
+  assert.deepEqual(names(sortSubscriptions(subs, "amount", "desc", { today, ...LABELS })), ["Hundred", "Ten", "Nine", "None"]);
+});
+
+test("sortSubscriptions by category, cycle, status and login uses the text the screen shows, empties last", () => {
+  const today = new Date(Date.UTC(2026, 10, 16));
+  const o = { today, ...LABELS };
+  const byCat = [sub({ name: "A", category: "Tools" }), sub({ name: "B", category: null }), sub({ name: "C", category: "ai" })];
+  assert.deepEqual(names(sortSubscriptions(byCat, "category", "asc", o)), ["C", "A", "B"]);
+  assert.deepEqual(names(sortSubscriptions(byCat, "category", "desc", o)), ["A", "C", "B"]);
+  const byCycle = [sub({ name: "M", billingCycle: "monthly" }), sub({ name: "O", billingCycle: "one_off" }), sub({ name: "A", billingCycle: "annual" })];
+  assert.deepEqual(names(sortSubscriptions(byCycle, "billingCycle", "asc", o)), ["A", "M", "O"]);
+  const byStatus = [sub({ name: "T", status: "to_register" }), sub({ name: "A", status: "active" }), sub({ name: "I", status: "inactive" })];
+  assert.deepEqual(names(sortSubscriptions(byStatus, "status", "desc", o)), ["T", "I", "A"]);
+  const byLogin = [sub({ name: "E", loginIdentifier: null, loginEmail: "b@x.test" }), sub({ name: "N" }), sub({ name: "I", loginIdentifier: "alpha" })];
+  assert.deepEqual(names(sortSubscriptions(byLogin, "login", "asc", o)), ["I", "E", "N"]);
+});
+
+test("sortSubscriptions by next charge date puts the soonest first, a billing day counting as its next occurrence", () => {
+  const today = new Date(Date.UTC(2026, 10, 16));
+  const subs = [
+    sub({ name: "Dec", nextChargeDate: "2026-12-01" }),
+    sub({ name: "Day20", billingCycle: "monthly", billingDay: 20 }), // 2026-11-20
+    sub({ name: "Unknown" }),
+    sub({ name: "Day5", billingCycle: "monthly", billingDay: 5, status: "inactive" }), // 2026-12-05, inactive still sorts
+  ];
+  assert.deepEqual(names(sortSubscriptions(subs, "nextChargeDate", "asc", { today, ...LABELS })), ["Day20", "Dec", "Day5", "Unknown"]);
+  assert.deepEqual(names(sortSubscriptions(subs, "nextChargeDate", "desc", { today, ...LABELS })), ["Day5", "Dec", "Day20", "Unknown"]);
+});
+
+test("sortSubscriptions keeps ties by name and never changes the list it was given", () => {
+  const today = new Date(Date.UTC(2026, 10, 16));
+  const subs = [sub({ name: "b", amount: 5 }), sub({ name: "a", amount: 5 })];
+  const sorted = sortSubscriptions(subs, "amount", "desc", { today, ...LABELS });
+  assert.deepEqual(names(sorted), ["a", "b"]);
+  assert.deepEqual(names(subs), ["b", "a"]);
 });

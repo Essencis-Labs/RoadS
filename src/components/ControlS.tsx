@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   createSubscription,
   deleteSubscription,
@@ -15,8 +15,12 @@ import {
   byCategory,
   byService,
   formatMoney,
+  sortSubscriptions,
+  sortsByValue,
   totals,
   upcomingRenewals,
+  type SortDir,
+  type SortKey,
   type Subscription,
   type SubscriptionInput,
 } from "@/lib/controls/subscription";
@@ -55,6 +59,81 @@ function StatusPill({ status }: { status: Subscription["status"] }) {
         ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
         : "bg-rs-lane text-rs-text-soft";
   return <span className={`rounded-md px-2 py-0.5 text-xs font-bold ${tone}`}>{STATUS_LABEL[status]}</span>;
+}
+
+type Sort = { key: SortKey; dir: SortDir } | null;
+
+// A column title with a small arrow on its right, in the title's own color. The arrow opens a tiny menu to
+// sort the list by that column, ascending or descending (alphabetical, or by amount/date for those columns).
+function SortHeader({ column, label, sort, onSort }: { column: SortKey; label: string; sort: Sort; onSort: (s: Sort) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const active = sort?.key === column ? sort.dir : null;
+  const kind = column === "nextChargeDate" ? "date" : sortsByValue(column) ? "value" : "text";
+  const pick = (dir: SortDir | null) => {
+    onSort(dir ? { key: column, dir } : null);
+    setOpen(false);
+  };
+  const option = (dir: SortDir, text: string, hint: string) => (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={active === dir}
+      onClick={() => pick(dir)}
+      className={`flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs normal-case tracking-normal hover:bg-rs-lane ${active === dir ? "font-bold text-rs-brand-text" : "font-semibold text-rs-text"}`}
+    >
+      <span>{text}</span>
+      <span className="whitespace-nowrap font-normal text-rs-text-faint">{hint}</span>
+    </button>
+  );
+  return (
+    <div ref={ref} className="relative inline-flex items-center gap-1">
+      <span>{label}</span>
+      <button
+        type="button"
+        aria-label={CONTROLS.sortBy(label)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        data-sort-column={column}
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex h-4 w-4 items-center justify-center rounded text-current hover:bg-rs-lane"
+      >
+        <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
+          {active === "asc" ? <path d="M5 2 L9 7 H1 Z" /> : <path d="M1 3 H9 L5 8 Z" />}
+        </svg>
+      </button>
+      {open && (
+        <div role="menu" className="absolute left-0 top-full z-20 mt-1 flex w-52 flex-col gap-0.5 rounded-lg border border-rs-border bg-rs-card p-1 shadow-lg">
+          {option("asc", CONTROLS.sortAscending, CONTROLS.sortAscendingHint[kind])}
+          {option("desc", CONTROLS.sortDescending, CONTROLS.sortDescendingHint[kind])}
+          {active && (
+            <button
+              type="button"
+              onClick={() => pick(null)}
+              className="w-full rounded-md px-2.5 py-1.5 text-left text-xs font-semibold normal-case tracking-normal text-rs-text-soft hover:bg-rs-lane"
+            >
+              {CONTROLS.sortClear}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const panel = "flex flex-col gap-4 rounded-2xl border border-rs-border bg-rs-card p-4 sm:p-6";
@@ -340,6 +419,11 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
   const [formOpen, setFormOpen] = useState<{ editing: Subscription | null } | null>(null);
   const [deleting, setDeleting] = useState<Subscription | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [sort, setSort] = useState<Sort>(null);
+  const rows = useMemo(
+    () => (subs && sort ? sortSubscriptions(subs, sort.key, sort.dir, { today, cycleLabel: CYCLE_LABEL, statusLabel: STATUS_LABEL }) : (subs ?? [])),
+    [subs, sort, today]
+  );
 
   function reload() {
     listSubscriptions()
@@ -449,19 +533,33 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
             <table className="w-full min-w-[920px] text-left text-sm">
               <thead>
                 <tr className="border-b border-rs-border text-[11px] font-bold uppercase tracking-wide text-rs-text-faint">
-                  <th className="px-4 py-3">{CONTROLS.name}</th>
-                  <th className="px-4 py-3">{CONTROLS.category}</th>
-                  <th className="px-4 py-3">{CONTROLS.amount}</th>
-                  <th className="px-4 py-3">{CONTROLS.billingCycle}</th>
-                  <th className="px-4 py-3">{CONTROLS.nextChargeDate}</th>
-                  <th className="px-4 py-3">{CONTROLS.status}</th>
-                  <th className="px-4 py-3">{CONTROLS.loginIdentifier}</th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="name" label={CONTROLS.name} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="category" label={CONTROLS.category} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="amount" label={CONTROLS.amount} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="billingCycle" label={CONTROLS.billingCycle} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="nextChargeDate" label={CONTROLS.nextChargeDate} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="status" label={CONTROLS.status} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="login" label={CONTROLS.loginIdentifier} sort={sort} onSort={setSort} />
+                  </th>
                   <th className="px-4 py-3">{CONTROLS.password}</th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
-                {subs.map((s) => {
+                {rows.map((s) => {
                   const days = model.renewalDays.get(s.id);
                   return (
                     <tr key={s.id} className={`border-b border-rs-border last:border-0 ${days != null ? "bg-rs-brand-soft/50" : ""}`}>

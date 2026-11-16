@@ -180,6 +180,66 @@ export function upcomingRenewals(subs: Subscription[], today: Date, windowDays =
   return out.sort((a, b) => a.daysUntil - b.daysUntil || a.name.localeCompare(b.name));
 }
 
+// ---- Sorting the list ----------------------------------------------------------------------------------
+
+export type SortKey = "name" | "category" | "amount" | "billingCycle" | "nextChargeDate" | "status" | "login";
+export type SortDir = "asc" | "desc";
+export const SORT_KEYS: SortKey[] = ["name", "category", "amount", "billingCycle", "nextChargeDate", "status", "login"];
+
+/** The columns that sort by a number or a date; the rest sort by the text the screen shows. */
+export function sortsByValue(key: SortKey): boolean {
+  return key === "amount" || key === "nextChargeDate";
+}
+
+type SortOptions = {
+  today: Date;
+  cycleLabel: Record<BillingCycle, string>;
+  statusLabel: Record<SubStatus, string>;
+};
+
+const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+
+/** What a row sorts by in a column: a string (compared as the screen shows it), a number, or null for an
+ *  empty cell. The next charge date of a monthly sub with only a billing day is its next occurrence, whatever
+ *  its status, so the column orders by the date the row means. */
+function sortValue(s: Subscription, key: SortKey, o: SortOptions): string | number | null {
+  const text = (v: string | null | undefined) => (v?.trim() ? v.trim() : null);
+  switch (key) {
+    case "name":
+      return text(s.name);
+    case "category":
+      return text(s.category);
+    case "amount":
+      return s.amount != null && Number.isFinite(s.amount) ? s.amount : null;
+    case "billingCycle":
+      return o.cycleLabel[s.billingCycle];
+    case "status":
+      return o.statusLabel[s.status];
+    case "login":
+      return text(s.loginIdentifier) ?? text(s.loginEmail);
+    case "nextChargeDate":
+      return nextCharge({ ...s, status: "active" }, o.today)?.getTime() ?? null;
+  }
+}
+
+/** A sorted copy of the list by one column. Text is alphabetical (case and accents ignored), amounts and dates
+ *  are numeric; an empty cell always goes last, in both directions; ties keep the name order. */
+export function sortSubscriptions(subs: Subscription[], key: SortKey, dir: SortDir, o: SortOptions): Subscription[] {
+  const sign = dir === "asc" ? 1 : -1;
+  return [...subs].sort((a, b) => {
+    const va = sortValue(a, key, o);
+    const vb = sortValue(b, key, o);
+    if (va == null || vb == null) {
+      if (va != null) return -1;
+      if (vb != null) return 1;
+    } else {
+      const c = typeof va === "number" && typeof vb === "number" ? va - vb : collator.compare(String(va), String(vb));
+      if (c !== 0) return sign * c;
+    }
+    return collator.compare(a.name, b.name);
+  });
+}
+
 /** Money for the screen: the subscription's currency, grouped thousands, two decimals. BRL shows as "R$". */
 export function formatMoney(value: number, currency = "BRL"): string {
   const symbol = currency === "BRL" ? "R$" : currency === "USD" ? "$" : currency === "EUR" ? "€" : "";

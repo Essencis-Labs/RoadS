@@ -60,6 +60,14 @@ export const CONTROLS = {
   notes: "Notes",
   password: "Password",
 
+  // column sort
+  sortBy: (column: string) => `Sort by ${column}`,
+  sortAscending: "Ascending",
+  sortDescending: "Descending",
+  sortAscendingHint: { text: "A → Z", value: "Low → High", date: "Soonest first" },
+  sortDescendingHint: { text: "Z → A", value: "High → Low", date: "Latest first" },
+  sortClear: "Clear sort",
+
   // cycle + status labels
   cycleMonthly: "Monthly",
   cycleAnnual: "Annual",
