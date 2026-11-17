@@ -12,6 +12,7 @@ const PUBLIC_ACTIONS: Record<string, string[]> = {
   "admin.ts": ["listUsersForConfig", "resetUserPassword", "setUserGithubLogin", "updateUserRole"],
   "assignees.ts": ["listAssignableProfiles"],
   "dashboard.ts": ["getDashboard", "syncDashboard"],
+  "payment-cards.ts": ["createPaymentCard", "deletePaymentCard", "listPaymentCards", "updatePaymentCard"],
   "progress.ts": ["markProgressReportSent", "saveProgressEdit", "setProgressChecked"],
   "roadmap.ts": ["createRoadmapItem", "deleteRoadmapItem", "getRoadmapBoard", "moveRoadmapItemLane", "saveRoadmapItemEdit"],
   "subscriptions.ts": ["createSubscription", "deleteSubscription", "listSubscriptions", "revealSubscriptionSecret", "updateSubscription"],

@@ -2,14 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   biggestSpend,
+  byCard,
   byCategory,
+  cardDisplay,
   byService,
   formatMoney,
+  isLast4,
   monthlyEquivalent,
   nextCharge,
   sortSubscriptions,
   totals,
   upcomingRenewals,
+  type PaymentCard,
   type Subscription,
 } from "./subscription.ts";
 
@@ -29,6 +33,7 @@ function sub(partial: Partial<Subscription>): Subscription {
     nextChargeDate: partial.nextChargeDate ?? null,
     status: partial.status ?? "active",
     notes: partial.notes ?? null,
+    paymentCardId: partial.paymentCardId ?? null,
   };
 }
 
@@ -165,4 +170,68 @@ test("sortSubscriptions keeps ties by name and never changes the list it was giv
   const sorted = sortSubscriptions(subs, "amount", "desc", { today, ...LABELS });
   assert.deepEqual(names(sorted), ["a", "b"]);
   assert.deepEqual(names(subs), ["b", "a"]);
+});
+
+// ---- Payment cards ------------------------------------------------------------------------------------
+
+const CARD_A: PaymentCard = { id: "card-a", label: "Card A", last4: "1111", holder: "Holder A", notes: null };
+const CARD_B: PaymentCard = { id: "card-b", label: "Card B", last4: "2222", holder: null, notes: null };
+
+test("isLast4 accepts exactly four digits", () => {
+  assert.equal(isLast4("1234"), true);
+  assert.equal(isLast4(" 5678 "), true);
+  for (const bad of ["12345", "12a4", "", "123"]) assert.equal(isLast4(bad), false, bad);
+});
+
+test("cardDisplay shows the label and the last four digits", () => {
+  assert.equal(cardDisplay(CARD_A), "Card A •••• 1111");
+});
+
+test("byCard groups active spend per card and reconciles with totals", () => {
+  const subs = [
+    sub({ name: "m100", amount: 100, billingCycle: "monthly", paymentCardId: "card-a" }),
+    sub({ name: "a120", amount: 120, billingCycle: "annual", paymentCardId: "card-a" }),
+    sub({ name: "o50", amount: 50, billingCycle: "one_off", paymentCardId: "card-b" }),
+    sub({ name: "m30", amount: 30, billingCycle: "monthly", paymentCardId: null }),
+    sub({ name: "off", amount: 999, billingCycle: "monthly", paymentCardId: "card-a", status: "inactive" }),
+    sub({ name: "gone", amount: 7, billingCycle: "monthly", paymentCardId: "gone" }),
+  ];
+  const slices = byCard(subs, [CARD_A, CARD_B], "No card set");
+  assert.deepEqual(slices.map((s) => s.cardId), ["card-a", null, "card-b"]);
+  const [a, none, b] = slices;
+  assert.equal(a.monthly, 110);
+  assert.equal(a.annual, 1320);
+  assert.equal(a.count, 2);
+  assert.equal(a.last4, "1111");
+  assert.equal(a.holder, "Holder A");
+  assert.equal(b.monthly, 0);
+  assert.equal(b.oneOffTotal, 50);
+  assert.equal(b.count, 1);
+  assert.equal(none.monthly, 37);
+  assert.equal(none.count, 2);
+  assert.equal(none.label, "No card set");
+  assert.equal(none.last4, null);
+  const t = totals(subs);
+  assert.equal(slices.reduce((n, s) => n + s.monthly, 0), t.monthly);
+  assert.equal(slices.reduce((n, s) => n + s.annual, 0), t.annual);
+  assert.equal(slices.reduce((n, s) => n + s.oneOffTotal, 0), t.oneOffTotal);
+});
+
+test("byCard leaves out a card with no active subscription and adds no empty no-card group", () => {
+  const subs = [sub({ name: "x", amount: 10, paymentCardId: "card-a" })];
+  assert.deepEqual(byCard(subs, [CARD_A, CARD_B], "No card set").map((s) => s.cardId), ["card-a"]);
+});
+
+test("sortSubscriptions by card puts rows without a card last both ways", () => {
+  const today = new Date(Date.UTC(2026, 10, 16));
+  const cardLabel = new Map([CARD_A, CARD_B].map((c) => [c.id, cardDisplay(c)]));
+  const o = { today, ...LABELS, cardLabel };
+  const subs = [
+    sub({ name: "None", paymentCardId: null }),
+    sub({ name: "B", paymentCardId: "card-b" }),
+    sub({ name: "Gone", paymentCardId: "gone" }),
+    sub({ name: "A", paymentCardId: "card-a" }),
+  ];
+  assert.deepEqual(names(sortSubscriptions(subs, "card", "asc", o)), ["A", "B", "Gone", "None"]);
+  assert.deepEqual(names(sortSubscriptions(subs, "card", "desc", o)), ["B", "A", "Gone", "None"]);
 });

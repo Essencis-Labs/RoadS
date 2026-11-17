@@ -38,10 +38,11 @@ type Row = {
   next_charge_date: string | null;
   status: string;
   notes: string | null;
+  payment_card_id: string | null;
 };
 
 const COLUMNS =
-  "id, name, category, access_url, login_identifier, login_email, secret_password, amount, currency, billing_cycle, billing_day, next_charge_date, status, notes";
+  "id, name, category, access_url, login_identifier, login_email, secret_password, amount, currency, billing_cycle, billing_day, next_charge_date, status, notes, payment_card_id";
 
 // Maps a row to the shape the screen sees. The ciphertext never leaves this function: it becomes the
 // `hasSecret` flag and is dropped, so the listing can't ship a password (even sealed) to the browser.
@@ -61,6 +62,7 @@ function toSubscription(row: Row): Subscription {
     nextChargeDate: row.next_charge_date,
     status: isSubStatus(row.status) ? row.status : "active",
     notes: row.notes,
+    paymentCardId: row.payment_card_id,
   };
 }
 
@@ -68,6 +70,8 @@ function clean(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // A create/edit form's fields, validated into the database columns. Throws on a bad shape; the secret is
 // handled apart (it is encrypted, never logged, never echoed back).
@@ -98,6 +102,7 @@ function sanitize(input: SubscriptionInput): Record<string, unknown> {
     next_charge_date: nextChargeDate,
     status: input.status,
     notes: clean(input.notes),
+    payment_card_id: UUID.test(input.paymentCardId?.trim() ?? "") ? input.paymentCardId!.trim() : null,
   };
 }
 

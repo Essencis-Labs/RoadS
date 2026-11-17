@@ -8,17 +8,22 @@ import {
   revealSubscriptionSecret,
   updateSubscription,
 } from "@/lib/actions/subscriptions";
+import { createPaymentCard, deletePaymentCard, listPaymentCards, updatePaymentCard } from "@/lib/actions/payment-cards";
 import {
   BILLING_CYCLES,
   SUB_STATUSES,
   biggestSpend,
+  byCard,
   byCategory,
+  cardDisplay,
+  isLast4,
   byService,
   formatMoney,
   sortSubscriptions,
   sortsByValue,
   totals,
   upcomingRenewals,
+  type PaymentCard,
   type SortDir,
   type SortKey,
   type Subscription,
@@ -31,6 +36,13 @@ import { CONTROLS, CYCLE_LABEL, STATUS_LABEL } from "@/lib/text/controls";
 const SAVE_ERROR: Record<string, string> = {
   name_required: CONTROLS.nameRequired,
   vault_locked: CONTROLS.vaultLocked,
+};
+
+const CARD_ERROR: Record<string, string> = {
+  label_required: CONTROLS.labelRequired,
+  invalid_last4: CONTROLS.invalidLast4,
+  card_in_use: CONTROLS.cardInUse,
+  looks_like_card_number: CONTROLS.looksLikeCardNumber,
 };
 
 // Midnight today in the viewer's own day, as a UTC instant, so renewal maths lines up with stored dates.
@@ -208,6 +220,7 @@ function emptyForm(): FormState {
     nextChargeDate: "",
     status: "active",
     notes: "",
+    paymentCardId: null,
     secretInput: "",
     clearSecret: false,
   };
@@ -227,6 +240,7 @@ function formFrom(sub: Subscription): FormState {
     nextChargeDate: sub.nextChargeDate ?? "",
     status: sub.status,
     notes: sub.notes ?? "",
+    paymentCardId: sub.paymentCardId,
     secretInput: "",
     clearSecret: false,
   };
@@ -236,12 +250,14 @@ function SubscriptionForm({
   initial,
   editing,
   vaultReady,
+  cards,
   onCancel,
   onSaved,
 }: {
   initial: FormState;
   editing: Subscription | null;
   vaultReady: boolean;
+  cards: PaymentCard[];
   onCancel: () => void;
   onSaved: (sub: Subscription) => void;
 }) {
@@ -269,6 +285,7 @@ function SubscriptionForm({
       nextChargeDate: form.nextChargeDate,
       status: form.status,
       notes: form.notes,
+      paymentCardId: form.paymentCardId,
     };
     const typed = form.secretInput.trim() ? form.secretInput : null;
 
@@ -307,6 +324,17 @@ function SubscriptionForm({
               {SUB_STATUSES.map((s) => (
                 <option key={s} value={s}>
                   {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className={`${label} sm:col-span-2`}>
+            {CONTROLS.card}
+            <select className={field} value={form.paymentCardId ?? ""} onChange={(e) => set("paymentCardId", e.target.value || null)}>
+              <option value="">{CONTROLS.noCard}</option>
+              {cards.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {cardDisplay(c)}
                 </option>
               ))}
             </select>
@@ -411,6 +439,132 @@ function SubscriptionForm({
   );
 }
 
+type CardDraft = { id: string | null; label: string; last4: string; holder: string };
+
+// The small "Payment cards" section: list, add, edit and delete. Only a label, the last four digits and the
+// holder are ever typed here. Deleting a card still used by a subscription is refused by the server.
+function CardManager({ cards, onChanged }: { cards: PaymentCard[]; onChanged: () => void }) {
+  const [draft, setDraft] = useState<CardDraft | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, startBusy] = useTransition();
+
+  const save = () => {
+    if (!draft) return;
+    if (!draft.label.trim()) return setError(CONTROLS.labelRequired);
+    if (!isLast4(draft.last4)) return setError(CONTROLS.invalidLast4);
+    setError(null);
+    const input = { label: draft.label, last4: draft.last4, holder: draft.holder || null, notes: null };
+    startBusy(async () => {
+      const r = draft.id ? await updatePaymentCard(draft.id, input) : await createPaymentCard(input);
+      if (r.ok) {
+        setDraft(null);
+        onChanged();
+      } else setError(CARD_ERROR[r.error] ?? CONTROLS.saveFailed);
+    });
+  };
+
+  const remove = (card: PaymentCard) => {
+    setError(null);
+    startBusy(async () => {
+      const r = await deletePaymentCard(card.id);
+      if (r.ok) onChanged();
+      else setError(CARD_ERROR[r.error] ?? CONTROLS.saveFailed);
+    });
+  };
+
+  return (
+    <section className={panel} data-card-manager>
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-rs-text-soft">{CONTROLS.cards}</h2>
+        {!draft && (
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setDraft({ id: null, label: "", last4: "", holder: "" });
+            }}
+            className="rounded-lg border border-rs-border px-3 py-1.5 text-xs font-bold text-rs-brand-text"
+          >
+            {CONTROLS.addCard}
+          </button>
+        )}
+      </div>
+
+      {cards.length === 0 && !draft && <p className="text-sm text-rs-text-faint">{CONTROLS.noCards}</p>}
+      {cards.length > 0 && (
+        <ul className="flex flex-col divide-y divide-rs-border">
+          {cards.map((c) => (
+            <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+              <span className="text-sm text-rs-text">
+                <b>{c.label}</b> <span className="font-mono text-xs text-rs-text-soft">•••• {c.last4}</span>
+                {c.holder && <span className="ml-2 text-xs text-rs-text-faint">{c.holder}</span>}
+              </span>
+              <span className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(null);
+                    setDraft({ id: c.id, label: c.label, last4: c.last4, holder: c.holder ?? "" });
+                  }}
+                  className="rounded-lg border border-rs-border px-2.5 py-1.5 text-xs font-bold text-rs-text-soft"
+                >
+                  {ACTION.edit}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => remove(c)}
+                  className="rounded-lg border border-rs-border px-2.5 py-1.5 text-xs font-bold text-red-600 disabled:opacity-60 dark:text-red-400"
+                >
+                  {ACTION.delete}
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {draft && (
+        <div className="flex flex-col gap-3 rounded-xl border border-rs-border p-4">
+          <span className="text-sm font-bold text-rs-text">{draft.id ? CONTROLS.editCard : CONTROLS.newCard}</span>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <label className={label}>
+              {CONTROLS.cardLabel}
+              <input className={field} value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} autoFocus />
+            </label>
+            <label className={label}>
+              {CONTROLS.cardLast4}
+              <input
+                className={field}
+                inputMode="numeric"
+                maxLength={4}
+                autoComplete="off"
+                value={draft.last4}
+                onChange={(e) => setDraft({ ...draft, last4: e.target.value })}
+              />
+            </label>
+            <label className={label}>
+              {CONTROLS.cardHolder}
+              <input className={field} value={draft.holder} onChange={(e) => setDraft({ ...draft, holder: e.target.value })} />
+            </label>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setDraft(null)} className="rounded-lg px-3 py-2 text-xs font-bold text-rs-text-soft">
+              {ACTION.cancel}
+            </button>
+            <button type="button" onClick={save} disabled={busy} className="rounded-lg bg-rs-brand px-3 py-2 text-xs font-bold text-white disabled:opacity-60">
+              {busy ? ACTION.saving : ACTION.save}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="text-sm font-semibold text-red-600 dark:text-red-400">{error}</p>}
+    </section>
+  );
+}
+
 export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) {
   const today = useToday();
   const [subs, setSubs] = useState<Subscription[] | null>(null);
@@ -420,16 +574,31 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
   const [deleting, setDeleting] = useState<Subscription | null>(null);
   const [isPending, startTransition] = useTransition();
   const [sort, setSort] = useState<Sort>(null);
-  const rows = useMemo(
-    () => (subs && sort ? sortSubscriptions(subs, sort.key, sort.dir, { today, cycleLabel: CYCLE_LABEL, statusLabel: STATUS_LABEL }) : (subs ?? [])),
-    [subs, sort, today]
-  );
+  const [cards, setCards] = useState<PaymentCard[]>([]);
+  // Which card's subscriptions the table shows: a card id, "none" (no card or an unknown one), or all.
+  const [cardFilter, setCardFilter] = useState<string | null>(null);
+  const cardLabel = useMemo(() => new Map(cards.map((c) => [c.id, cardDisplay(c)])), [cards]);
+  const rows = useMemo(() => {
+    const all = subs ?? [];
+    const filtered =
+      cardFilter == null
+        ? all
+        : cardFilter === "none"
+          ? all.filter((s) => !s.paymentCardId || !cardLabel.has(s.paymentCardId))
+          : all.filter((s) => s.paymentCardId === cardFilter);
+    return sort
+      ? sortSubscriptions(filtered, sort.key, sort.dir, { today, cycleLabel: CYCLE_LABEL, statusLabel: STATUS_LABEL, cardLabel })
+      : filtered;
+  }, [subs, sort, today, cardFilter, cardLabel]);
 
   function reload() {
-    listSubscriptions()
-      .then((r) => {
+    Promise.all([listSubscriptions(), listPaymentCards()])
+      .then(([r, c]) => {
         setSubs(r.subscriptions);
         setVaultReady(r.vaultReady);
+        setCards(c);
+        // A filter on a card that no longer exists would hide everything: drop it.
+        setCardFilter((f) => (f == null || f === "none" || c.some((x) => x.id === f) ? f : null));
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : CONTROLS.loadFailed));
   }
@@ -442,12 +611,13 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
     return {
       t: totals(subs),
       categories: byCategory(subs),
+      cardSlices: byCard(subs, cards, CONTROLS.noCard),
       services: byService(subs),
       biggest: biggestSpend(subs),
       renewals,
       renewalDays: new Map(renewals.map((r) => [r.id, r.daysUntil])),
     };
-  }, [subs, today]);
+  }, [subs, today, cards]);
 
   if (loadError) return <p className="text-sm text-red-600 dark:text-red-400">{CONTROLS.loadFailed}</p>;
   if (!subs || !model) return <p className="text-sm text-rs-text-soft">{CONTROLS.loading}</p>;
@@ -488,6 +658,54 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
         </section>
       </div>
 
+      {/* Spend by card */}
+      <section className={panel}>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-rs-text-soft">{CONTROLS.byCard}</h2>
+        {model.cardSlices.length === 0 ? (
+          <p className="text-sm text-rs-text-faint">{CONTROLS.noPricedSub}</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {model.cardSlices.map((c) => {
+              const key = c.cardId ?? "none";
+              const on = cardFilter === key;
+              return (
+                <li key={key}>
+                  <button
+                    type="button"
+                    data-card-slice={key}
+                    aria-pressed={on}
+                    onClick={() => setCardFilter(on ? null : key)}
+                    className={`flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border px-4 py-3 text-left ${on ? "border-rs-brand/60 bg-rs-brand-soft" : "border-rs-border hover:bg-rs-lane"}`}
+                  >
+                    <span className="flex flex-col">
+                      <span className="font-bold text-rs-text">
+                        {c.label}
+                        {c.last4 && <span className="ml-2 font-mono text-xs font-semibold text-rs-text-soft">•••• {c.last4}</span>}
+                      </span>
+                      {c.holder && <span className="text-xs text-rs-text-faint">{c.holder}</span>}
+                    </span>
+                    <span className="flex flex-wrap items-baseline gap-x-3 text-sm">
+                      <span className="font-extrabold text-rs-text">
+                        {formatMoney(c.monthly, currency)} <span className="text-xs font-semibold text-rs-text-faint">{CONTROLS.perMonth}</span>
+                      </span>
+                      <span className="text-rs-text-soft">
+                        {formatMoney(c.annual, currency)} <span className="text-xs text-rs-text-faint">{CONTROLS.perYear}</span>
+                      </span>
+                      {c.oneOffTotal > 0 && (
+                        <span className="text-rs-text-soft">
+                          {formatMoney(c.oneOffTotal, currency)} <span className="text-xs text-rs-text-faint">{CONTROLS.oneOff}</span>
+                        </span>
+                      )}
+                      <span className="text-xs font-semibold text-rs-text-faint">{CONTROLS.servicesCount(c.count)}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       {/* Upcoming renewals */}
       <section className={panel}>
         <h2 className="text-sm font-bold uppercase tracking-wide text-rs-text-soft">{CONTROLS.upcomingRenewals}</h2>
@@ -520,7 +738,17 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
       {/* List */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-extrabold text-rs-text">{CONTROLS.subscriptions}</h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-xl font-extrabold text-rs-text">{CONTROLS.subscriptions}</h2>
+            {cardFilter != null && (
+              <span className="flex items-center gap-2 rounded-lg bg-rs-brand-soft px-2.5 py-1 text-xs font-semibold text-rs-brand-text">
+                {CONTROLS.filterByCard(cardFilter === "none" ? CONTROLS.noCard : (cardLabel.get(cardFilter) ?? CONTROLS.noCard))}
+                <button type="button" onClick={() => setCardFilter(null)} className="font-bold underline">
+                  {CONTROLS.clearFilter}
+                </button>
+              </span>
+            )}
+          </div>
           <button onClick={() => setFormOpen({ editing: null })} className="rounded-lg bg-rs-brand px-4 py-2 text-sm font-bold text-white">
             {CONTROLS.add}
           </button>
@@ -530,7 +758,7 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
           <p className="text-sm text-rs-text-soft">{CONTROLS.empty}</p>
         ) : (
           <div className="overflow-x-auto rounded-2xl border border-rs-border bg-rs-card">
-            <table className="w-full min-w-[920px] text-left text-sm">
+            <table className="w-full min-w-[1040px] text-left text-sm">
               <thead>
                 <tr className="border-b border-rs-border text-[11px] font-bold uppercase tracking-wide text-rs-text-faint">
                   <th className="px-4 py-3">
@@ -550,6 +778,9 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
                   </th>
                   <th className="px-4 py-3">
                     <SortHeader column="status" label={CONTROLS.status} sort={sort} onSort={setSort} />
+                  </th>
+                  <th className="px-4 py-3">
+                    <SortHeader column="card" label={CONTROLS.card} sort={sort} onSort={setSort} />
                   </th>
                   <th className="px-4 py-3">
                     <SortHeader column="login" label={CONTROLS.loginIdentifier} sort={sort} onSort={setSort} />
@@ -588,6 +819,15 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
                         <StatusPill status={s.status} />
                       </td>
                       <td className="px-4 py-3 text-xs text-rs-text-soft">
+                        {s.paymentCardId && cardLabel.has(s.paymentCardId) ? (
+                          <span title={cardLabel.get(s.paymentCardId)} className="whitespace-nowrap font-mono">
+                            •••• {cards.find((c) => c.id === s.paymentCardId)?.last4}
+                          </span>
+                        ) : (
+                          CONTROLS.none
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-rs-text-soft">
                         <div className="max-w-[160px] truncate">{s.loginIdentifier ?? s.loginEmail ?? CONTROLS.none}</div>
                       </td>
                       <td className="px-4 py-3">
@@ -612,11 +852,14 @@ export function ControlS({ initialVaultReady }: { initialVaultReady: boolean }) 
         )}
       </section>
 
+      <CardManager cards={cards} onChanged={reload} />
+
       {formOpen && (
         <SubscriptionForm
           initial={formOpen.editing ? formFrom(formOpen.editing) : emptyForm()}
           editing={formOpen.editing}
           vaultReady={vaultReady}
+          cards={cards}
           onCancel={() => setFormOpen(null)}
           onSaved={() => {
             setFormOpen(null);

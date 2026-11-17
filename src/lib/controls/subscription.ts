@@ -25,6 +25,8 @@ export type Subscription = {
   nextChargeDate: string | null;
   status: SubStatus;
   notes: string | null;
+  /** The payment card it is charged to, or null when not set. */
+  paymentCardId: string | null;
 };
 
 /** What a create/edit form sends. The secret is handled apart: undefined keeps it, null clears it, a string sets it. */
@@ -41,7 +43,28 @@ export type SubscriptionInput = {
   nextChargeDate: string | null;
   status: SubStatus;
   notes: string | null;
+  paymentCardId: string | null;
 };
+
+/** A payment card as RoadS keeps it: a name, the last four digits and who holds it. Never the full number,
+ *  the expiry, the CVV or a document number — those stay outside the app. */
+export type PaymentCard = {
+  id: string;
+  label: string;
+  last4: string;
+  holder: string | null;
+  notes: string | null;
+};
+
+/** True when the value, trimmed, is exactly four digits. */
+export function isLast4(value: string): boolean {
+  return /^\d{4}$/.test(value.trim());
+}
+
+/** How a card reads on the screen: its label and the last four digits. */
+export function cardDisplay(card: PaymentCard): string {
+  return `${card.label} •••• ${card.last4}`;
+}
 
 export function isBillingCycle(value: unknown): value is BillingCycle {
   return value === "monthly" || value === "annual" || value === "one_off";
@@ -122,6 +145,49 @@ export function biggestSpend(subs: Subscription[]): ServiceBar | null {
   return byService(subs)[0] ?? null;
 }
 
+export type CardSlice = {
+  cardId: string | null;
+  label: string;
+  last4: string | null;
+  holder: string | null;
+  monthly: number;
+  annual: number;
+  oneOffTotal: number;
+  count: number;
+};
+
+/** How much falls on each payment card, active subs only, so the groups add up to totals(). A sub with no card,
+ *  or with a card id that is no longer in the list, goes to one "no card" group (cardId null). A card with no
+ *  active sub is left out. Biggest monthly spend first, then by label. */
+export function byCard(subs: Subscription[], cards: PaymentCard[], noCardLabel: string): CardSlice[] {
+  const known = new Map(cards.map((c) => [c.id, c]));
+  const map = new Map<string | null, CardSlice>();
+  for (const s of subs.filter((x) => x.status === "active")) {
+    const card = s.paymentCardId ? known.get(s.paymentCardId) : undefined;
+    const key = card ? card.id : null;
+    const slice =
+      map.get(key) ??
+      {
+        cardId: key,
+        label: card ? card.label : noCardLabel,
+        last4: card ? card.last4 : null,
+        holder: card ? card.holder : null,
+        monthly: 0,
+        annual: 0,
+        oneOffTotal: 0,
+        count: 0,
+      };
+    slice.monthly += monthlyEquivalent(s);
+    if (s.billingCycle === "one_off" && s.amount != null && Number.isFinite(s.amount)) {
+      slice.oneOffTotal += Math.max(0, s.amount);
+    }
+    slice.count += 1;
+    map.set(key, slice);
+  }
+  for (const slice of map.values()) slice.annual = slice.monthly * 12;
+  return [...map.values()].sort((a, b) => b.monthly - a.monthly || a.label.localeCompare(b.label));
+}
+
 // ---- Renewals -------------------------------------------------------------------------------------------
 
 /** A date as YYYY-MM-DD in UTC, so "today" and a stored date line up without a timezone drifting the day. */
@@ -182,9 +248,9 @@ export function upcomingRenewals(subs: Subscription[], today: Date, windowDays =
 
 // ---- Sorting the list ----------------------------------------------------------------------------------
 
-export type SortKey = "name" | "category" | "amount" | "billingCycle" | "nextChargeDate" | "status" | "login";
+export type SortKey = "name" | "category" | "amount" | "billingCycle" | "nextChargeDate" | "status" | "login" | "card";
 export type SortDir = "asc" | "desc";
-export const SORT_KEYS: SortKey[] = ["name", "category", "amount", "billingCycle", "nextChargeDate", "status", "login"];
+export const SORT_KEYS: SortKey[] = ["name", "category", "amount", "billingCycle", "nextChargeDate", "status", "login", "card"];
 
 /** The columns that sort by a number or a date; the rest sort by the text the screen shows. */
 export function sortsByValue(key: SortKey): boolean {
@@ -195,6 +261,8 @@ type SortOptions = {
   today: Date;
   cycleLabel: Record<BillingCycle, string>;
   statusLabel: Record<SubStatus, string>;
+  /** Card id → what the card cell shows. A missing map, a null id or an unknown id is an empty cell. */
+  cardLabel?: Map<string, string>;
 };
 
 const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
@@ -217,6 +285,8 @@ function sortValue(s: Subscription, key: SortKey, o: SortOptions): string | numb
       return o.statusLabel[s.status];
     case "login":
       return text(s.loginIdentifier) ?? text(s.loginEmail);
+    case "card":
+      return s.paymentCardId ? (o.cardLabel?.get(s.paymentCardId) ?? null) : null;
     case "nextChargeDate":
       return nextCharge({ ...s, status: "active" }, o.today)?.getTime() ?? null;
   }
